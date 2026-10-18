@@ -1,0 +1,62 @@
+name: update
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, nightly]
+    steps:
+      # Pushes and PRs made with GITHUB_TOKEN start no workflows, so CI would never run and
+      # auto-merge would never happen.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          set -euo pipefail
+          current="$(cat "releases/$CHANNEL")"
+          latest="$(./scripts/select-releases.sh "$CHANNEL")"
+          if [[ "$current" == "$latest" ]]; then
+            echo "$CHANNEL is up to date at $current"
+            exit 0
+          fi
+
+          branch="update/$CHANNEL"
+          title="update $CHANNEL to $latest"
+          git config user.name "t3code-gateway-release[bot]"
+          git config user.email "311177698+t3code-gateway-release[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          echo "$latest" >"releases/$CHANNEL"
+          git commit -am "$title"
+          git push --force origin "$branch"
+
+          body="Builds [pingdotgg/t3code $latest](https://github.com/pingdotgg/t3code/releases/tag/$latest). Merges once CI builds it."
+          if [[ "$(gh pr list --head "$branch" --state open --json number --jq length)" == 0 ]]; then
+            gh pr create --head "$branch" --base main --title "$title" --body "$body"
+          else
+            gh pr edit "$branch" --title "$title" --body "$body"
+          fi
+          gh pr merge "$branch" --auto --squash

@@ -1,0 +1,84 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [releases/**]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      stable: ${{ steps.plan.outputs.stable }}
+      nightly: ${{ steps.plan.outputs.nightly }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for channel in stable nightly; do
+            tag="$(cat "releases/$channel")"
+            if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "$tag is already released"
+            else
+              echo "$channel=$tag" >>"$GITHUB_OUTPUT"
+            fi
+          done
+
+  build-stable:
+    needs: plan
+    if: needs.plan.outputs.stable != ''
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.plan.outputs.stable }}
+
+  build-nightly:
+    needs: plan
+    if: needs.plan.outputs.nightly != ''
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.plan.outputs.nightly }}
+
+  publish:
+    needs: [plan, build-stable, build-nightly]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && (needs.plan.outputs.stable != '' || needs.plan.outputs.nightly != '') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          pattern: web-*
+          path: out
+          merge-multiple: true
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE: ${{ needs.plan.outputs.stable }}
+          NIGHTLY: ${{ needs.plan.outputs.nightly }}
+        run: |
+          set -euo pipefail
+          publish() {
+            local tag="$1"
+            shift
+            gh release create "$tag" "out/T3-Code-Web-${tag#v}.zip" \
+              -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$tag" \
+              --notes "Hosted web app built from [pingdotgg/t3code $tag](https://github.com/pingdotgg/t3code/releases/tag/$tag)." \
+              "$@"
+          }
+          # The gateway reads stable from releases/latest, so only stable may become latest.
+          if [[ -n "$STABLE" ]]; then publish "$STABLE" --latest; fi
+          if [[ -n "$NIGHTLY" ]]; then publish "$NIGHTLY" --prerelease --latest=false; fi

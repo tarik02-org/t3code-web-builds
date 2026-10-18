@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    runs-on: ubuntu-latest
+    outputs:
+      stable: ${{ steps.read.outputs.stable }}
+      nightly: ${{ steps.read.outputs.nightly }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - id: read
+        run: |
+          echo "stable=$(cat releases/stable)" >>"$GITHUB_OUTPUT"
+          echo "nightly=$(cat releases/nightly)" >>"$GITHUB_OUTPUT"
+
+  stable:
+    needs: pins
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.pins.outputs.stable }}
+
+  nightly:
+    needs: pins
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ needs.pins.outputs.nightly }}
+
+  # The ruleset requires this one job, so it stays the same however the builds are split.
+  ci:
+    if: always()
+    needs: [stable, nightly]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "both channels build"
